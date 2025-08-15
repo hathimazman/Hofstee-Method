@@ -1,0 +1,6 @@
+/hofstee
+
+*.csv
+*.ipynb
+*.xlsx
+/test
