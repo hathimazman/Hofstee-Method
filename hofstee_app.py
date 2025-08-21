@@ -6,11 +6,6 @@ from scipy import stats
 from scipy.optimize import minimize_scalar
 import seaborn as sns
 import io
-try:
-    from scipy.interpolate import PchipInterpolator  # shape-preserving cubic
-    _HAS_PCHIP = True
-except ImportError:
-    _HAS_PCHIP = False  # will fallback to linear interpolation
 
 # Set page config
 st.set_page_config(
@@ -63,61 +58,6 @@ class HofsteeAnalyzer:
         """Generate a range of possible cutoff values."""
         return np.linspace(self.min_cutoff, self.max_cutoff, 1000)
     
-    def calculate_hofstee_cutoff_continuous(self):
-        import numpy as np
-        from scipy.interpolate import PchipInterpolator
-        from scipy.optimize import brentq, minimize_scalar
-
-        # ---- Build monotone ECDF for "proportion below score" ----
-        s = np.sort(np.asarray(self.scores))
-        n = s.size
-        x_unique, counts = np.unique(s, return_counts=True)
-        cum_counts = np.cumsum(counts)
-        # proportion strictly below each unique score
-        y_below = (cum_counts - counts) / n
-
-        # Sentinel points so the curve spans 0%..100%
-        x_min, x_max = x_unique[0], x_unique[-1]
-        x_ecdf = np.r_[x_min - 1e-6, x_unique, x_max + 1e-6]
-        y_ecdf = np.r_[0.0, y_below, 1.0]
-
-        # Monotone, smooth CDF
-        F = PchipInterpolator(x_ecdf, y_ecdf, extrapolate=True)
-
-        # Hofstee diagonal as a function of score c
-        def L(c):
-            t = (c - self.min_cutoff) / (self.max_cutoff - self.min_cutoff)
-            return self.max_fail_rate - (self.max_fail_rate - self.min_fail_rate) * t
-
-        # Difference between curves
-        def g(c):  # positive if ECDF is above diagonal
-            return float(F(c) - L(c))
-
-        a, b = float(self.min_cutoff), float(self.max_cutoff)
-
-        # Prefer a true root if the curves cross within [a,b]
-        try:
-            if g(a) * g(b) <= 0:
-                c_star = brentq(g, a, b)
-            else:
-                # No crossing (diagonal entirely above/below CDF): minimize absolute gap
-                res = minimize_scalar(lambda c: abs(g(c)), bounds=(a, b), method='bounded')
-                c_star = float(res.x)
-        except Exception:
-            # Robust fallback: dense search
-            grid = np.linspace(a, b, 5001)
-            c_star = grid[np.argmin(np.abs([g(c) for c in grid]))]
-
-        cutoff = float(c_star)
-        fail_rate = float(F(c_star))  # proportion in [0,1]
-
-        return {
-            "cutoff": cutoff,
-            "failure_rate": fail_rate,
-            "method": "continuous_pchip"
-        }
-
-    
     def calculate_hofstee_cutoff(self):
         """Calculate the Hofstee cutoff using the compromise method."""
         cutoff_range = self.get_cutoff_range()
@@ -147,45 +87,25 @@ class HofsteeAnalyzer:
         }
     
     def plot_hofstee_cumulative(self, figsize=(10, 8)):
-        """Create the classic Hofstee plot with a smooth (Excel-like) cumulative curve."""
+        """Create the classic Hofstee plot: Cumulative Percentage vs Score"""
         results = self.calculate_hofstee_cutoff()
-
-        # ----- Build a monotone ECDF for "percentage below score" -----
-        s = np.sort(np.asarray(self.scores))
-        n = s.size
-        x_unique, counts = np.unique(s, return_counts=True)
-        cum_counts = np.cumsum(counts)
-
-        # For "below score" (strictly <), the cumulative at a unique value v is
-        # all items strictly less than v: cum_counts - counts
-        y_below_at_unique = 100.0 * (cum_counts - counts) / n
-
-        # Add sentinel points so the curve naturally goes from 0% to 100%
-        x_min, x_max = x_unique[0], x_unique[-1]
-        x_ecdf = np.concatenate(([x_min - 1e-6], x_unique, [x_max + 1e-6]))
-        y_ecdf = np.concatenate(([0.0], y_below_at_unique, [100.0]))
-
-        # Dense x for a smooth plot
-        x_plot = np.linspace(np.min(self.scores) - 2, np.max(self.scores) + 2, 1000)
-
-        if _HAS_PCHIP and x_ecdf.size >= 3:
-            # Excel-like smooth line, but shape-preserving (no overshoot)
-            pchip = PchipInterpolator(x_ecdf, y_ecdf, extrapolate=True)
-            y_plot = pchip(x_plot)
-        else:
-            # Fallback: linear interpolation (still monotone, just not curved)
-            y_plot = np.interp(x_plot, x_ecdf, y_ecdf)
-
-        # Keep within [0, 100]
-        y_plot = np.clip(y_plot, 0.0, 100.0)
-
-        # ----- Plot -----
+        
+        # Calculate cumulative percentages
+        score_range = np.linspace(np.min(self.scores) - 2, np.max(self.scores) + 2, 1000)
+        cumulative_percentages = []
+        
+        for score in score_range:
+            below_count = np.sum(self.scores < score)
+            percentage = (below_count / len(self.scores)) * 100
+            cumulative_percentages.append(percentage)
+        
         fig, ax = plt.subplots(figsize=figsize)
-
-        # Smooth cumulative curve (Excel-like)
-        ax.plot(x_plot, y_plot, 'b-', linewidth=3, label='Cumulative % Below Score (smooth)')
-
-        # Hofstee bounding rectangle
+        
+        # Plot the cumulative curve
+        ax.plot(score_range, cumulative_percentages, 'b-', linewidth=3, 
+               label='Cumulative % Below Score')
+        
+        # Create the Hofstee bounding rectangle
         rect_corners = [
             (self.min_cutoff, self.min_fail_rate * 100),
             (self.max_cutoff, self.min_fail_rate * 100),
@@ -193,52 +113,55 @@ class HofsteeAnalyzer:
             (self.min_cutoff, self.max_fail_rate * 100),
             (self.min_cutoff, self.min_fail_rate * 100)
         ]
-        rect_x = [p[0] for p in rect_corners]
-        rect_y = [p[1] for p in rect_corners]
+        
+        rect_x = [point[0] for point in rect_corners]
+        rect_y = [point[1] for point in rect_corners]
+        
+        # Draw the bounding rectangle
         ax.plot(rect_x, rect_y, 'r-', linewidth=2, label='Hofstee Constraints')
         ax.fill(rect_x[:-1], rect_y[:-1], alpha=0.1, color='red', label='Acceptable Region')
-
-        # Diagonal line
+        
+        # Draw the diagonal line
         diagonal_x = [self.min_cutoff, self.max_cutoff]
         diagonal_y = [self.max_fail_rate * 100, self.min_fail_rate * 100]
         ax.plot(diagonal_x, diagonal_y, 'g--', linewidth=2, label='Hofstee Diagonal')
-
-        # Intersection point (from your discrete calculation)
+        
+        # Mark the intersection point
         intersection_score = results['cutoff']
         intersection_percentage = results['failure_rate'] * 100
-        ax.plot(intersection_score, intersection_percentage, 'ro', markersize=12,
-                markeredgecolor='black', markeredgewidth=2,
-                label=f'Hofstee Cutoff\n({intersection_score:.2f}, {intersection_percentage:.1f}%)')
-
-        # Constraint boundary lines
+        ax.plot(intersection_score, intersection_percentage, 'ro', markersize=12, 
+               markeredgecolor='black', markeredgewidth=2,
+               label=f'Hofstee Cutoff\n({intersection_score:.2f}, {intersection_percentage:.1f}%)')
+        
+        # Add constraint boundary lines
         ax.axhline(self.min_fail_rate * 100, color='orange', linestyle=':', alpha=0.7,
-                label=f'Min Failure Rate ({self.min_fail_rate:.0%})')
+                  label=f'Min Failure Rate ({self.min_fail_rate:.0%})')
         ax.axhline(self.max_fail_rate * 100, color='orange', linestyle=':', alpha=0.7,
-                label=f'Max Failure Rate ({self.max_fail_rate:.0%})')
+                  label=f'Max Failure Rate ({self.max_fail_rate:.0%})')
         ax.axvline(self.min_cutoff, color='purple', linestyle=':', alpha=0.7,
-                label=f'Min Cutoff ({self.min_cutoff})')
+                  label=f'Min Cutoff ({self.min_cutoff})')
         ax.axvline(self.max_cutoff, color='purple', linestyle=':', alpha=0.7,
-                label=f'Max Cutoff ({self.max_cutoff})')
-
+                  label=f'Max Cutoff ({self.max_cutoff})')
+        
         # Formatting
         ax.set_xlabel('Score', fontsize=12, fontweight='bold')
         ax.set_ylabel('Cumulative Percentage', fontsize=12, fontweight='bold')
-        ax.set_title('Hofstee Method: Cumulative Percentage vs Score',
+        ax.set_title('Hofstee Method: Cumulative Percentage vs Score', 
                     fontsize=14, fontweight='bold', pad=20)
         ax.grid(True, alpha=0.3)
         ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-
+        
         ax.set_xlim(np.min(self.scores) - 2, np.max(self.scores) + 2)
         ax.set_ylim(-2, 102)
-
-        # Annotation
+        
+        # Add annotation
         ax.annotate(f'Hofstee Cutoff: {intersection_score:.2f}\nFailure Rate: {intersection_percentage:.1f}%',
-                    xy=(intersection_score, intersection_percentage),
-                    xytext=(intersection_score + 3, intersection_percentage + 10),
-                    arrowprops=dict(arrowstyle='->', color='red', lw=1.5),
-                    bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.8),
-                    fontsize=10, fontweight='bold')
-
+                   xy=(intersection_score, intersection_percentage), 
+                   xytext=(intersection_score + 3, intersection_percentage + 10),
+                   arrowprops=dict(arrowstyle='->', color='red', lw=1.5),
+                   bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.8),
+                   fontsize=10, fontweight='bold')
+        
         plt.tight_layout()
         return fig, results
     
@@ -447,7 +370,7 @@ def main():
             
             # Results summary
             st.subheader("🎯 Analysis Results")
-            results = analyzer.calculate_hofstee_cutoff_continuous()
+            results = analyzer.calculate_hofstee_cutoff()
             
             # Key metrics
             col1, col2, col3, col4 = st.columns(4)
