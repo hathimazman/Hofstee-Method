@@ -6,11 +6,11 @@ from scipy import stats
 from scipy.optimize import minimize_scalar
 import seaborn as sns
 import io
-    try:
-        from scipy.interpolate import PchipInterpolator  # shape-preserving cubic
-        _HAS_PCHIP = True
-    except ImportError:
-        _HAS_PCHIP = False  # will fallback to linear interpolation
+try:
+    from scipy.interpolate import PchipInterpolator  # shape-preserving cubic
+    _HAS_PCHIP = True
+except ImportError:
+    _HAS_PCHIP = False  # will fallback to linear interpolation
 
 # Set page config
 st.set_page_config(
