@@ -95,7 +95,7 @@ class HofsteeAnalyzer:
         
         return score_range, smooth_percentages
     
-   def calculate_hofstee_cutoff(self):
+    def calculate_hofstee_cutoff(self):
         """Calculate the Hofstee cutoff using the compromise method."""
         cutoff_range = self.get_cutoff_range()
         failure_rates = [self.calculate_failure_rate(c) for c in cutoff_range]
