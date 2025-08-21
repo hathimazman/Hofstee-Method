@@ -131,7 +131,7 @@ class HofsteeAnalyzer:
         intersection_percentage = results['failure_rate'] * 100
         ax.plot(intersection_score, intersection_percentage, 'ro', markersize=12, 
                markeredgecolor='black', markeredgewidth=2,
-               label=f'Hofstee Cutoff\n({intersection_score:.1f}, {intersection_percentage:.1f}%)')
+               label=f'Hofstee Cutoff\n({intersection_score:.2f}, {intersection_percentage:.1f}%)')
         
         # Add constraint boundary lines
         ax.axhline(self.min_fail_rate * 100, color='orange', linestyle=':', alpha=0.7,
