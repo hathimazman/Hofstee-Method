@@ -331,8 +331,6 @@ def main():
             
             min_cutoff = st.number_input(
                 "Minimum Cutoff Score",
-                min_value=score_min,
-                max_value=score_max,
                 value=max(score_min, score_min + score_range * 0.3),
                 step=0.5,
                 help="The lowest acceptable passing score"
@@ -340,8 +338,6 @@ def main():
 
             max_cutoff = st.number_input(
                 "Maximum Cutoff Score",
-                min_value=min_cutoff,
-                max_value=score_max,
                 value=min(score_max, score_min + score_range * 0.7),
                 step=0.5,
                 help="The highest acceptable passing score"
@@ -349,8 +345,6 @@ def main():
 
             min_fail_rate = st.number_input(
                 "Minimum Failure Rate (%)",
-                min_value=0.0,
-                max_value=50.0,
                 value=5.0,
                 step=0.5,
                 help="Minimum acceptable percentage of students who should fail"
@@ -358,8 +352,6 @@ def main():
 
             max_fail_rate = st.number_input(
                 "Maximum Failure Rate (%)",
-                min_value=min_fail_rate * 100,
-                max_value=80.0,
                 value=35.0,
                 step=0.5,
                 help="Maximum acceptable percentage of students who should fail"
