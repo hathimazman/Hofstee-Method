@@ -4,6 +4,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import stats
 from scipy.optimize import minimize_scalar
+from scipy.interpolate import interp1d, UnivariateSpline
 import seaborn as sns
 import io
 
@@ -36,6 +37,7 @@ st.markdown("""
 class HofsteeAnalyzer:
     """
     A class to perform Hofstee analysis for determining cutoff scores in assessments.
+    Enhanced with smooth curve plotting capabilities.
     """
     
     def __init__(self, scores, min_cutoff=None, max_cutoff=None, 
@@ -58,7 +60,42 @@ class HofsteeAnalyzer:
         """Generate a range of possible cutoff values."""
         return np.linspace(self.min_cutoff, self.max_cutoff, 1000)
     
-    def calculate_hofstee_cutoff(self):
+    def get_smooth_cumulative_curve(self, score_range=None, smoothing_factor=0.3):
+        """Generate smooth cumulative curve using spline interpolation."""
+        if score_range is None:
+            score_range = np.linspace(np.min(self.scores) - 2, np.max(self.scores) + 2, 500)
+        
+        # Calculate empirical cumulative percentages
+        empirical_scores = []
+        empirical_percentages = []
+        
+        # Use percentiles for better smoothing
+        percentiles = np.linspace(0, 100, 50)
+        for p in percentiles:
+            score = np.percentile(self.scores, p)
+            empirical_scores.append(score)
+            empirical_percentages.append(p)
+        
+        # Create smooth spline
+        try:
+            # Use UnivariateSpline for smooth interpolation
+            spline = UnivariateSpline(empirical_scores, empirical_percentages, s=smoothing_factor)
+            smooth_percentages = spline(score_range)
+            
+            # Ensure monotonic and bounded
+            smooth_percentages = np.clip(smooth_percentages, 0, 100)
+            smooth_percentages = np.maximum.accumulate(smooth_percentages)
+            
+        except:
+            # Fallback to linear interpolation if spline fails
+            f = interp1d(empirical_scores, empirical_percentages, 
+                        kind='cubic', bounds_error=False, fill_value='extrapolate')
+            smooth_percentages = f(score_range)
+            smooth_percentages = np.clip(smooth_percentages, 0, 100)
+        
+        return score_range, smooth_percentages
+    
+   def calculate_hofstee_cutoff(self):
         """Calculate the Hofstee cutoff using the compromise method."""
         cutoff_range = self.get_cutoff_range()
         failure_rates = [self.calculate_failure_rate(c) for c in cutoff_range]
@@ -100,26 +137,27 @@ class HofsteeAnalyzer:
             'intersection_difference': differences[min_idx]
         }
     
-    def plot_hofstee_cumulative(self, figsize=(10, 8)):
-        """Create the classic Hofstee plot: Cumulative Percentage vs Score"""
+    def plot_hofstee_cumulative_smooth(self, figsize=(12, 8), smoothing_factor=0.3):
+        """Create smooth Hofstee plot: Cumulative Percentage vs Score"""
         results = self.calculate_hofstee_cutoff()
         
-        # Calculate cumulative percentages
-        score_range = np.linspace(np.min(self.scores) - 2, np.max(self.scores) + 2, 1000)
-        cumulative_percentages = []
-        
-        for score in score_range:
-            below_count = np.sum(self.scores < score)
-            percentage = (below_count / len(self.scores)) * 100
-            cumulative_percentages.append(percentage)
+        # Get smooth cumulative curve
+        score_range, smooth_percentages = self.get_smooth_cumulative_curve(
+            smoothing_factor=smoothing_factor
+        )
         
         fig, ax = plt.subplots(figsize=figsize)
         
-        # Plot the cumulative curve
-        ax.plot(score_range, cumulative_percentages, 'b-', linewidth=3, 
-               label='Cumulative % Below Score')
+        # Plot the smooth cumulative curve with enhanced styling
+        ax.plot(score_range, smooth_percentages, 'b-', linewidth=4, 
+               label='Cumulative % Below Score', alpha=0.8)
         
-        # Create the Hofstee bounding rectangle
+        # Add subtle gradient effect using multiple lines
+        for i, alpha in enumerate([0.1, 0.05, 0.02]):
+            ax.plot(score_range, smooth_percentages, 'b-', 
+                   linewidth=6-i, alpha=alpha)
+        
+        # Create the Hofstee bounding rectangle with rounded corners effect
         rect_corners = [
             (self.min_cutoff, self.min_fail_rate * 100),
             (self.max_cutoff, self.min_fail_rate * 100),
@@ -131,122 +169,187 @@ class HofsteeAnalyzer:
         rect_x = [point[0] for point in rect_corners]
         rect_y = [point[1] for point in rect_corners]
         
-        # Draw the bounding rectangle
-        ax.plot(rect_x, rect_y, 'r-', linewidth=2, label='Hofstee Constraints')
-        ax.fill(rect_x[:-1], rect_y[:-1], alpha=0.1, color='red', label='Acceptable Region')
+        # Draw the bounding rectangle with enhanced styling
+        ax.plot(rect_x, rect_y, 'r-', linewidth=3, label='Hofstee Constraints', alpha=0.8)
+        ax.fill(rect_x[:-1], rect_y[:-1], alpha=0.15, color='red', label='Acceptable Region')
         
-        # Draw the diagonal line
+        # Draw the diagonal line with smooth styling
         diagonal_x = [self.min_cutoff, self.max_cutoff]
         diagonal_y = [self.max_fail_rate * 100, self.min_fail_rate * 100]
-        ax.plot(diagonal_x, diagonal_y, 'g--', linewidth=2, label='Hofstee Diagonal')
+        ax.plot(diagonal_x, diagonal_y, 'g--', linewidth=3, label='Hofstee Diagonal', alpha=0.8)
         
-        # Mark the intersection point
+        # Mark the intersection point with enhanced marker
         intersection_score = results['cutoff']
         intersection_percentage = results['failure_rate'] * 100
-        ax.plot(intersection_score, intersection_percentage, 'ro', markersize=12, 
-               markeredgecolor='black', markeredgewidth=2,
-               label=f'Hofstee Cutoff\n({intersection_score:.2f}, {intersection_percentage:.1f}%)')
         
-        # Add constraint boundary lines
-        ax.axhline(self.min_fail_rate * 100, color='orange', linestyle=':', alpha=0.7,
-                  label=f'Min Failure Rate ({self.min_fail_rate:.0%})')
-        ax.axhline(self.max_fail_rate * 100, color='orange', linestyle=':', alpha=0.7,
-                  label=f'Max Failure Rate ({self.max_fail_rate:.0%})')
-        ax.axvline(self.min_cutoff, color='purple', linestyle=':', alpha=0.7,
-                  label=f'Min Cutoff ({self.min_cutoff})')
-        ax.axvline(self.max_cutoff, color='purple', linestyle=':', alpha=0.7,
-                  label=f'Max Cutoff ({self.max_cutoff})')
+        # Multi-layer marker for better visibility
+        ax.plot(intersection_score, intersection_percentage, 'o', 
+               markersize=15, color='white', markeredgecolor='darkred', 
+               markeredgewidth=3, alpha=0.9, zorder=10)
+        ax.plot(intersection_score, intersection_percentage, 'o', 
+               markersize=11, color='red', alpha=0.8, zorder=11)
+        ax.plot(intersection_score, intersection_percentage, 'o', 
+               markersize=6, color='white', alpha=1, zorder=12)
         
-        # Formatting
-        ax.set_xlabel('Score', fontsize=12, fontweight='bold')
-        ax.set_ylabel('Cumulative Percentage', fontsize=12, fontweight='bold')
-        ax.set_title('Hofstee Method: Cumulative Percentage vs Score', 
-                    fontsize=14, fontweight='bold', pad=20)
-        ax.grid(True, alpha=0.3)
-        ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        # Add constraint boundary lines with improved styling
+        constraint_style = {'linestyle': ':', 'alpha': 0.6, 'linewidth': 2}
+        ax.axhline(self.min_fail_rate * 100, color='orange', 
+                  label=f'Min Failure Rate ({self.min_fail_rate:.0%})', **constraint_style)
+        ax.axhline(self.max_fail_rate * 100, color='orange', 
+                  label=f'Max Failure Rate ({self.max_fail_rate:.0%})', **constraint_style)
+        ax.axvline(self.min_cutoff, color='purple', 
+                  label=f'Min Cutoff ({self.min_cutoff})', **constraint_style)
+        ax.axvline(self.max_cutoff, color='purple', 
+                  label=f'Max Cutoff ({self.max_cutoff})', **constraint_style)
+        
+        # Enhanced formatting
+        ax.set_xlabel('Score', fontsize=14, fontweight='bold')
+        ax.set_ylabel('Cumulative Percentage', fontsize=14, fontweight='bold')
+        ax.set_title('Hofstee Method: Smooth Cumulative Analysis', 
+                    fontsize=16, fontweight='bold', pad=25)
+        
+        # Improved grid
+        ax.grid(True, alpha=0.3, linestyle='-', linewidth=0.5)
+        ax.grid(True, alpha=0.15, linestyle='-', linewidth=0.8, which='minor')
+        ax.minorticks_on()
+        
+        # Enhanced legend
+        legend = ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', 
+                          frameon=True, fancybox=True, shadow=True)
+        legend.get_frame().set_facecolor('white')
+        legend.get_frame().set_alpha(0.9)
         
         ax.set_xlim(np.min(self.scores) - 2, np.max(self.scores) + 2)
         ax.set_ylim(-2, 102)
         
-        # Add annotation
+        # Enhanced annotation with better styling
+        bbox_props = dict(boxstyle="round,pad=0.5", facecolor="lightyellow", 
+                         edgecolor='orange', alpha=0.9, linewidth=2)
         ax.annotate(f'Hofstee Cutoff: {intersection_score:.2f}\nFailure Rate: {intersection_percentage:.1f}%',
                    xy=(intersection_score, intersection_percentage), 
-                   xytext=(intersection_score + 3, intersection_percentage + 10),
-                   arrowprops=dict(arrowstyle='->', color='red', lw=1.5),
-                   bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.8),
-                   fontsize=10, fontweight='bold')
+                   xytext=(intersection_score + 4, intersection_percentage + 15),
+                   arrowprops=dict(arrowstyle='->', color='darkred', lw=2, alpha=0.8),
+                   bbox=bbox_props, fontsize=11, fontweight='bold')
+        
+        # Set background color
+        ax.set_facecolor('#fafafa')
+        fig.patch.set_facecolor('white')
         
         plt.tight_layout()
         return fig, results
     
-    def create_summary_plots(self, figsize=(15, 10)):
-        """Create comprehensive analysis plots"""
+    def create_summary_plots_smooth(self, figsize=(16, 12), smoothing_factor=0.3):
+        """Create comprehensive analysis plots with smooth curves"""
         results = self.calculate_hofstee_cutoff()
         
         fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=figsize)
-        fig.suptitle('Hofstee Cutoff Analysis - Comprehensive View', fontsize=16, fontweight='bold')
+        fig.suptitle('Hofstee Cutoff Analysis - Enhanced Smooth View', 
+                    fontsize=18, fontweight='bold', y=0.98)
         
-        # Plot 1: Score distribution
-        ax1.hist(self.scores, bins=30, alpha=0.7, color='skyblue', edgecolor='black')
-        ax1.axvline(results['cutoff'], color='red', linestyle='--', linewidth=2, 
-                   label=f'Hofstee Cutoff: {results["cutoff"]:.2f}')
-        ax1.set_xlabel('Score')
-        ax1.set_ylabel('Frequency')
-        ax1.set_title('Score Distribution')
-        ax1.legend()
+        # Plot 1: Enhanced score distribution with KDE overlay
+        ax1.hist(self.scores, bins=30, alpha=0.6, color='skyblue', 
+                edgecolor='navy', linewidth=1.2, density=True, label='Distribution')
+        
+        # Add KDE overlay for smooth distribution curve
+        try:
+            from scipy.stats import gaussian_kde
+            kde = gaussian_kde(self.scores)
+            x_kde = np.linspace(self.scores.min(), self.scores.max(), 200)
+            y_kde = kde(x_kde)
+            ax1.plot(x_kde, y_kde, 'navy', linewidth=3, alpha=0.8, label='Smooth Density')
+        except:
+            pass
+        
+        ax1.axvline(results['cutoff'], color='red', linestyle='--', linewidth=3, 
+                   label=f'Hofstee Cutoff: {results["cutoff"]:.2f}', alpha=0.8)
+        ax1.set_xlabel('Score', fontsize=12, fontweight='bold')
+        ax1.set_ylabel('Density', fontsize=12, fontweight='bold')
+        ax1.set_title('Score Distribution with Smooth Density', fontweight='bold', fontsize=13)
+        ax1.legend(frameon=True, fancybox=True)
         ax1.grid(True, alpha=0.3)
+        ax1.set_facecolor('#fafafa')
         
-        # Plot 2: Hofstee curve with intersection
+        # Plot 2: Smooth Hofstee curve with enhanced intersection
         cutoff_range = results['cutoff_range']
-        failure_rates = results['failure_rates']
+        failure_rates = np.array(results['failure_rates'])
         diagonal_rates = results['diagonal_rates']
         
-        ax2.plot(cutoff_range, failure_rates, 'b-', linewidth=2, label='Empirical Curve')
-        ax2.plot(cutoff_range, diagonal_rates, 'g--', linewidth=2, label='Hofstee Diagonal')
-        ax2.plot(results['cutoff'], results['failure_rate'], 'ro', markersize=10, 
-                label=f'Intersection ({results["cutoff"]:.2f}, {results["failure_rate"]:.3f})')
+        # Smooth the empirical curve
+        try:
+            spline_smooth = UnivariateSpline(cutoff_range, failure_rates, s=smoothing_factor*0.01)
+            smooth_failure_rates = spline_smooth(cutoff_range)
+        except:
+            smooth_failure_rates = failure_rates
         
-        # Add constraint boundaries
-        ax2.axhline(self.min_fail_rate, color='orange', linestyle=':', alpha=0.7, 
-                   label=f'Min Fail Rate: {self.min_fail_rate:.2f}')
-        ax2.axhline(self.max_fail_rate, color='orange', linestyle=':', alpha=0.7, 
-                   label=f'Max Fail Rate: {self.max_fail_rate:.2f}')
-        ax2.axvline(self.min_cutoff, color='purple', linestyle=':', alpha=0.7, 
-                   label=f'Min Cutoff: {self.min_cutoff:.2f}')
-        ax2.axvline(self.max_cutoff, color='purple', linestyle=':', alpha=0.7, 
-                   label=f'Max Cutoff: {self.max_cutoff:.2f}')
+        # Plot smooth curves
+        ax2.plot(cutoff_range, smooth_failure_rates, 'b-', linewidth=4, 
+                label='Empirical Curve (Smooth)', alpha=0.8)
+        ax2.plot(cutoff_range, diagonal_rates, 'g--', linewidth=3, 
+                label='Hofstee Diagonal', alpha=0.8)
         
-        # Add vertical line to the intersection point
-        ax2.axvline(results['cutoff'], color='red', linestyle='--', alpha=0.7, 
-                   label=f'Intersection: {results["cutoff"]:.2f}')
+        # Enhanced intersection point
+        ax2.plot(results['cutoff'], results['failure_rate'], 'o', 
+                markersize=10, color='white', markeredgecolor='red', 
+                markeredgewidth=3, zorder=10)
+        ax2.plot(results['cutoff'], results['failure_rate'], 'o', 
+                markersize=6, color='red', zorder=11)
         
-        ax2.set_xlabel('Score')
-        ax2.set_ylabel('Cummulative Percentage')
-        ax2.set_title('Hofstee Method: Zoom in to the boundary box')
-        ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        # Add constraint boundaries with better styling
+        constraint_style = {'linestyle': ':', 'alpha': 0.7, 'linewidth': 2}
+        ax2.axhline(self.min_fail_rate, color='orange', **constraint_style)
+        ax2.axhline(self.max_fail_rate, color='orange', **constraint_style)
+        ax2.axvline(self.min_cutoff, color='purple', **constraint_style)
+        ax2.axvline(self.max_cutoff, color='purple', **constraint_style)
+        ax2.axvline(results['cutoff'], color='red', linestyle='--', 
+                   alpha=0.7, linewidth=2)
+        
+        ax2.set_xlabel('Score', fontsize=12, fontweight='bold')
+        ax2.set_ylabel('Failure Rate', fontsize=12, fontweight='bold')
+        ax2.set_title('Smooth Hofstee Analysis', fontweight='bold', fontsize=13)
+        ax2.legend(frameon=True, fancybox=True)
         ax2.grid(True, alpha=0.3)
+        ax2.set_facecolor('#fafafa')
         
-        # Plot 3: Pass/Fail visualization
+        # Plot 3: Enhanced Pass/Fail visualization
         pass_scores = self.scores[self.scores >= results['cutoff']]
         fail_scores = self.scores[self.scores < results['cutoff']]
         
-        ax3.hist([fail_scores, pass_scores], bins=20, alpha=0.7, 
-                color=['red', 'green'], label=['Fail', 'Pass'], stacked=True)
-        ax3.axvline(results['cutoff'], color='black', linestyle='--', linewidth=2)
-        ax3.set_xlabel('Score')
-        ax3.set_ylabel('Frequency')
-        ax3.set_title('Pass/Fail Distribution')
-        ax3.legend()
+        # Create overlapping histograms with transparency
+        ax3.hist(fail_scores, bins=25, alpha=0.7, color='coral', 
+                label=f'Fail ({len(fail_scores)})', edgecolor='darkred', linewidth=1)
+        ax3.hist(pass_scores, bins=25, alpha=0.7, color='lightgreen', 
+                label=f'Pass ({len(pass_scores)})', edgecolor='darkgreen', linewidth=1)
+        
+        ax3.axvline(results['cutoff'], color='black', linestyle='--', 
+                   linewidth=3, alpha=0.8, label='Cutoff')
+        ax3.set_xlabel('Score', fontsize=12, fontweight='bold')
+        ax3.set_ylabel('Frequency', fontsize=12, fontweight='bold')
+        ax3.set_title('Pass/Fail Distribution', fontweight='bold', fontsize=13)
+        ax3.legend(frameon=True, fancybox=True)
         ax3.grid(True, alpha=0.3)
+        ax3.set_facecolor('#fafafa')
         
-        # Plot 4: Score statistics
-        ax4.boxplot([self.scores, pass_scores, fail_scores], 
-                   labels=['All Scores', 'Passing', 'Failing'])
-        ax4.set_ylabel('Score')
-        ax4.set_title('Score Distribution by Outcome')
+        # Plot 4: Enhanced boxplot with swarm overlay
+        box_data = [self.scores, pass_scores, fail_scores]
+        labels = ['All Scores', 'Passing', 'Failing']
+        colors = ['lightblue', 'lightgreen', 'coral']
+        
+        bp = ax4.boxplot(box_data, labels=labels, patch_artist=True, 
+                        medianprops=dict(color='black', linewidth=2))
+        
+        for patch, color in zip(bp['boxes'], colors):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.7)
+        
+        ax4.set_ylabel('Score', fontsize=12, fontweight='bold')
+        ax4.set_title('Score Distribution by Outcome', fontweight='bold', fontsize=13)
         ax4.grid(True, alpha=0.3)
+        ax4.set_facecolor('#fafafa')
         
+        # Overall styling
         plt.tight_layout()
+        fig.patch.set_facecolor('white')
+        
         return fig, results
 
 def load_data(uploaded_file):
@@ -267,7 +370,7 @@ def load_data(uploaded_file):
 
 def main():
     # Header
-    st.markdown('<h1 class="main-header">📊 Hofstee Cutoff Analysis</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">📊 Enhanced Hofstee Cutoff Analysis</h1>', unsafe_allow_html=True)
     st.markdown("---")
     
     # Sidebar for inputs
@@ -370,7 +473,17 @@ def main():
                 step=0.5,
                 help="Maximum acceptable percentage of students who should fail"
             ) / 100
-
+            
+            # New smoothing parameter
+            st.header("🎨 Plot Styling")
+            smoothing_factor = st.slider(
+                "Curve Smoothness",
+                min_value=0.1,
+                max_value=1.0,
+                value=0.3,
+                step=0.1,
+                help="Adjust how smooth the curves appear (higher = smoother)"
+            )
             
             # Analysis button
             analyze_button = st.button("🔍 Analyze", type="primary")
@@ -415,14 +528,15 @@ def main():
                     help="Number of students who would fail"
                 )
             
-            # Main Hofstee plot
-            st.subheader("📈 Hofstee Analysis Plot")
-            fig1, _ = analyzer.plot_hofstee_cumulative()
+            # Main Hofstee plot with smooth curves
+            st.subheader("📈 Enhanced Hofstee Analysis Plot")
+            st.markdown("*Featuring smooth curves and professional styling*")
+            fig1, _ = analyzer.plot_hofstee_cumulative_smooth(smoothing_factor=smoothing_factor)
             st.pyplot(fig1)
             
-            # Comprehensive analysis
-            st.subheader("📊 Detailed Analysis")
-            fig2, _ = analyzer.create_summary_plots()
+            # Comprehensive analysis with smooth styling
+            st.subheader("📊 Detailed Analysis with Enhanced Visuals")
+            fig2, _ = analyzer.create_summary_plots_smooth(smoothing_factor=smoothing_factor)
             st.pyplot(fig2)
             
             # Detailed statistics
@@ -464,8 +578,8 @@ def main():
             # Parameter summary
             with st.expander("🔧 Analysis Parameters Used"):
                 param_data = {
-                    "Parameter": ["Minimum Cutoff", "Maximum Cutoff", "Minimum Failure Rate", "Maximum Failure Rate"],
-                    "Value": [min_cutoff, max_cutoff, f"{min_fail_rate:.1%}", f"{max_fail_rate:.1%}"]
+                    "Parameter": ["Minimum Cutoff", "Maximum Cutoff", "Minimum Failure Rate", "Maximum Failure Rate", "Smoothing Factor"],
+                    "Value": [min_cutoff, max_cutoff, f"{min_fail_rate:.1%}", f"{max_fail_rate:.1%}", f"{smoothing_factor:.1f}"]
                 }
                 st.dataframe(pd.DataFrame(param_data), hide_index=True)
     
@@ -474,13 +588,22 @@ def main():
         st.info("👈 Please upload a CSV or Excel file containing student scores, or use the sample data to get started.")
         
         st.markdown("""
+        ## ✨ What's New in Enhanced Version:
+        
+        - **Smooth Curves**: Professional Excel-like smooth line plotting
+        - **Enhanced Visuals**: Multi-layered markers, gradients, and professional styling
+        - **Adjustable Smoothness**: Control curve smoothness with the slider
+        - **Improved Annotations**: Better positioned labels and callouts
+        - **Professional Styling**: Enhanced colors, backgrounds, and typography
+        
         ## How to use this app:
         
         1. **Upload your data** - CSV or Excel file with student scores
         2. **Adjust parameters** in the sidebar:
            - Set minimum and maximum acceptable cutoff scores
            - Define acceptable failure rate range
-        3. **Click Analyze** to see results
+           - Control curve smoothness for visual appeal
+        3. **Click Analyze** to see results with smooth, professional plots
         
         ## About the Hofstee Method:
         
@@ -489,7 +612,7 @@ def main():
         - Considering acceptable failure rate limits
         - Finding the intersection between empirical data and expert constraints
         
-        This method is widely used in educational assessment and certification exams.
+        This enhanced version provides publication-ready visualizations with smooth curves.
         """)
 
 if __name__ == "__main__":
