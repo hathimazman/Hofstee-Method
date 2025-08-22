@@ -178,8 +178,7 @@ class HofsteeAnalyzer:
         ax.set_ylim(-2, 102)
 
         # Annotation
-        ax.annotate(f'Hofstee Cutoff: {x_star:.2f}
-Failure Rate: {y_star:.1f}%',
+        ax.annotate(f'Hofstee Cutoff: {x_star:.2f} \nFailure Rate: {y_star:.1f}%',
                     xy=(x_star, y_star),
                     xytext=(x_star + (max(self.scores)-min(self.scores))*0.05, y_star + 10),
                     arrowprops=dict(arrowstyle='->', color='red', lw=1.5),
@@ -231,6 +230,8 @@ Failure Rate: {y_star:.1f}%',
         ax2.set_xlabel('Score')
         ax2.set_ylabel('Cumulative Percentage (proportion)')
         ax2.set_title('Hofstee Method: Zoom into bounding box')
+        ax2.set_xlim(self.min_cutoff - 2, self.max_cutoff + 2)
+        ax2.set_ylim(self.min_fail_rate - 0.05,self.max_fail_rate + 0.05)
         ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         ax2.grid(True, alpha=0.3)
 
