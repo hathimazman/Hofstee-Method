@@ -176,8 +176,6 @@ class HofsteeAnalyzer:
                     label=f'Min Cutoff: {self.min_cutoff:.2f}')
         ax.axvline(self.max_cutoff, color='purple', linestyle=':', alpha=0.7,
                     label=f'Max Cutoff: {self.max_cutoff:.2f}')
-        ax.axvline(results['cutoff'], color='red', linestyle='--', alpha=0.7,
-                    label=f'Intersection: {results["cutoff"]:.2f}')
 
         # Axes labels and styling
         ax.set_xlabel('Score', fontsize=12, fontweight='bold')
