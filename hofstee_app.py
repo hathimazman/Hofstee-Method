@@ -178,8 +178,7 @@ class HofsteeAnalyzer:
         ax.set_ylim(-2, 102)
 
         # Annotation
-        ax.annotate(f'Hofstee Cutoff: {x_star:.2f}
-Failure Rate: {y_star:.1f}%',
+        ax.annotate(f'Hofstee Cutoff: {x_star:.2f} \nFailure Rate: {y_star:.1f}%',
                     xy=(x_star, y_star),
                     xytext=(x_star + (max(self.scores)-min(self.scores))*0.05, y_star + 10),
                     arrowprops=dict(arrowstyle='->', color='red', lw=1.5),
