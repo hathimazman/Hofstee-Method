@@ -231,7 +231,7 @@ class HofsteeAnalyzer:
         ax2.set_ylabel('Cumulative Percentage (proportion)')
         ax2.set_title('Hofstee Method: Zoom into bounding box')
         ax2.set_xlim(self.min_cutoff - 2, self.max_cutoff + 2)
-        ax2.set_ylim(self.min_fail_rate,self.max_fail_rate)
+        ax2.set_ylim(self.min_fail_rate - 0.05,self.max_fail_rate + 0.05)
         ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         ax2.grid(True, alpha=0.3)
 
