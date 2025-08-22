@@ -65,16 +65,38 @@ class HofsteeAnalyzer:
         if score_range is None:
             score_range = np.linspace(np.min(self.scores) - 2, np.max(self.scores) + 2, 500)
         
-        # Calculate empirical cumulative percentages
+        # Calculate TRUE cumulative percentages
+        # Sort scores to ensure proper cumulative calculation
+        sorted_scores = np.sort(self.scores)
+        n_total = len(sorted_scores)
+        
+        # Create empirical cumulative distribution points
         empirical_scores = []
         empirical_percentages = []
         
-        # Use percentiles for better smoothing
-        percentiles = np.linspace(0, 100, 50)
-        for p in percentiles:
-            score = np.percentile(self.scores, p)
+        # Use unique score values to avoid duplicate points
+        unique_scores = np.unique(sorted_scores)
+        
+        for score in unique_scores:
+            # Count how many scores are below this value
+            count_below = np.sum(sorted_scores < score)
+            percentage_below = (count_below / n_total) * 100
             empirical_scores.append(score)
-            empirical_percentages.append(p)
+            empirical_percentages.append(percentage_below)
+        
+        # Add endpoint to ensure we reach 100%
+        if empirical_scores[-1] < np.max(sorted_scores):
+            empirical_scores.append(np.max(sorted_scores))
+            empirical_percentages.append(100.0)
+        
+        # Ensure we start from 0% at the minimum
+        if empirical_scores[0] > np.min(sorted_scores):
+            empirical_scores.insert(0, np.min(sorted_scores))
+            empirical_percentages.insert(0, 0.0)
+        
+        # Convert to numpy arrays
+        empirical_scores = np.array(empirical_scores)
+        empirical_percentages = np.array(empirical_percentages)
         
         # Create smooth spline
         try:
@@ -92,6 +114,7 @@ class HofsteeAnalyzer:
                         kind='cubic', bounds_error=False, fill_value='extrapolate')
             smooth_percentages = f(score_range)
             smooth_percentages = np.clip(smooth_percentages, 0, 100)
+            smooth_percentages = np.maximum.accumulate(smooth_percentages)
         
         return score_range, smooth_percentages
     
