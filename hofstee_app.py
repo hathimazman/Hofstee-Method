@@ -166,6 +166,18 @@ class HofsteeAnalyzer:
         y_star = results['failure_rate'] * 100.0
         ax.plot(x_star, y_star, 'o', markersize=10, color='black',
                 label=f'Hofstee Cutoff: {x_star:.2f}')
+        
+        # Constraint boundaries
+        ax.axhline(self.min_fail_rate, color='orange', linestyle=':', alpha=0.7,
+                    label=f'Min Fail Rate: {self.min_fail_rate:.2f}')
+        ax.axhline(self.max_fail_rate, color='orange', linestyle=':', alpha=0.7,
+                    label=f'Max Fail Rate: {self.max_fail_rate:.2f}')
+        ax.axvline(self.min_cutoff, color='purple', linestyle=':', alpha=0.7,
+                    label=f'Min Cutoff: {self.min_cutoff:.2f}')
+        ax.axvline(self.max_cutoff, color='purple', linestyle=':', alpha=0.7,
+                    label=f'Max Cutoff: {self.max_cutoff:.2f}')
+        ax.axvline(results['cutoff'], color='red', linestyle='--', alpha=0.7,
+                    label=f'Intersection: {results["cutoff"]:.2f}')
 
         # Axes labels and styling
         ax.set_xlabel('Score', fontsize=12, fontweight='bold')
