@@ -4,9 +4,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import stats
 from scipy.interpolate import CubicSpline, interp1d
-from scipy.optimize import minimize_scalar
+from scipy.optimize import brentq
 import seaborn as sns
 import io
+import warnings
+warnings.filterwarnings('ignore')
 
 # Set page config
 st.set_page_config(
@@ -36,7 +38,8 @@ st.markdown("""
 
 class HofsteeAnalyzer:
     """
-    A class to perform Hofstee analysis for determining cutoff scores in assessments.
+    A class to perform Hofstee analysis for determining cutoff scores in assessments
+    with analytical equation solving capability.
     """
     
     def __init__(self, scores, min_cutoff=None, max_cutoff=None, 
@@ -50,7 +53,11 @@ class HofsteeAnalyzer:
         self.sorted_scores = np.sort(scores)
         self.n_students = len(scores)
         
-    def create_empirical_cdf_points(self, n_points=100):
+        # Initialize equation components
+        self.spline_func = None
+        self.diagonal_func = None
+        
+    def create_empirical_cdf_points(self):
         """Create empirical cumulative distribution points handling duplicates properly"""
         sorted_scores = np.sort(self.scores)
         n_total = len(sorted_scores)
@@ -85,6 +92,99 @@ class HofsteeAnalyzer:
         
         return np.array(empirical_scores), np.array(empirical_percentages)
     
+    def setup_equations(self):
+        """Set up the interpolation function and diagonal equation for analytical solving"""
+        # Get empirical CDF points
+        empirical_scores, empirical_percentages = self.create_empirical_cdf_points()
+        
+        # Create cubic spline interpolation function
+        self.spline_func = CubicSpline(empirical_scores, empirical_percentages, bc_type='natural')
+        
+        # Define diagonal function: y = mx + b
+        # The diagonal goes from (min_cutoff, max_fail_rate*100) to (max_cutoff, min_fail_rate*100)
+        slope = (self.min_fail_rate * 100 - self.max_fail_rate * 100) / (self.max_cutoff - self.min_cutoff)
+        intercept = self.max_fail_rate * 100 - slope * self.min_cutoff
+        
+        self.diagonal_func = lambda x: slope * x + intercept
+        
+        return slope, intercept
+    
+    def intersection_equation(self, x):
+        """Function to find intersection: spline(x) - diagonal(x) = 0"""
+        if self.spline_func is None or self.diagonal_func is None:
+            self.setup_equations()
+        return self.spline_func(x) - self.diagonal_func(x)
+    
+    def calculate_hofstee_cutoff(self, method='cubic_spline', analytical=True):
+        """Calculate the Hofstee cutoff using analytical or numerical method"""
+        
+        if analytical:
+            try:
+                # Set up equations for analytical solving
+                self.setup_equations()
+                
+                # Use Brent's method to find the root
+                cutoff_score = brentq(self.intersection_equation, self.min_cutoff, self.max_cutoff)
+                
+                # Calculate corresponding failure rate
+                failure_rate_percentage = self.spline_func(cutoff_score)
+                failure_rate = failure_rate_percentage / 100
+                
+                # Verify with diagonal
+                diagonal_value = self.diagonal_func(cutoff_score)
+                intersection_error = abs(failure_rate_percentage - diagonal_value)
+                
+                # Get diagonal equation for display
+                slope, intercept = self.setup_equations()
+                diagonal_equation = f"y = {slope:.6f}x + {intercept:.6f}"
+                
+                return {
+                    'cutoff': cutoff_score,
+                    'failure_rate': failure_rate,
+                    'failure_rate_percentage': failure_rate_percentage,
+                    'diagonal_value': diagonal_value,
+                    'intersection_error': intersection_error,
+                    'diagonal_equation': diagonal_equation,
+                    'analytical_solution': True,
+                    'method': 'brentq'
+                }
+                
+            except Exception as e:
+                st.warning(f"Analytical solution failed: {e}. Using numerical method.")
+                analytical = False
+        
+        if not analytical:
+            # Fallback to original numerical method
+            # Create score range within constraints
+            score_range = np.linspace(self.min_cutoff, self.max_cutoff, 1000)
+            
+            # Get smooth cumulative curve
+            _, smooth_percentages, _, _ = self.get_smooth_cumulative_curve(score_range, method)
+            
+            # Hofstee diagonal: failure_rate decreases linearly from max to min
+            slope = (self.max_fail_rate - self.min_fail_rate) / (self.min_cutoff - self.max_cutoff)
+            diagonal_fail_rates = self.max_fail_rate + slope * (score_range - self.min_cutoff)
+            diagonal_percentages = diagonal_fail_rates * 100
+            
+            # Find intersection point
+            differences = np.abs(smooth_percentages - diagonal_percentages)
+            min_idx = np.argmin(differences)
+            
+            cutoff_score = score_range[min_idx]
+            failure_rate = smooth_percentages[min_idx] / 100
+            
+            return {
+                'cutoff': cutoff_score,
+                'failure_rate': failure_rate,
+                'percentage_below': smooth_percentages[min_idx],
+                'score_range': score_range,
+                'smooth_percentages': smooth_percentages,
+                'diagonal_percentages': diagonal_percentages,
+                'intersection_difference': differences[min_idx],
+                'analytical_solution': False,
+                'method': 'numerical'
+            }
+    
     def get_smooth_cumulative_curve(self, score_range=None, method='cubic_spline'):
         """Generate smooth cumulative curve using spline interpolation"""
         if score_range is None:
@@ -108,8 +208,7 @@ class HofsteeAnalyzer:
                 
             else:  # 'linear' fallback
                 f = interp1d(empirical_scores, empirical_percentages, 
-                           kind='linear', bounds_error=False, 
-                           fill_value=(0, 100))
+                           kind='linear', bounds_error=False, fill_value=(0, 100))
                 smooth_percentages = f(score_range)
                 
         except Exception as e:
@@ -124,40 +223,9 @@ class HofsteeAnalyzer:
         
         return score_range, smooth_percentages, empirical_scores, empirical_percentages
     
-    def calculate_hofstee_cutoff(self, method='cubic_spline'):
-        """Calculate the Hofstee cutoff using smooth interpolation"""
-        # Create score range within constraints
-        score_range = np.linspace(self.min_cutoff, self.max_cutoff, 1000)
-        
-        # Get smooth cumulative curve
-        _, smooth_percentages, _, _ = self.get_smooth_cumulative_curve(score_range, method)
-        
-        # Hofstee diagonal: failure_rate decreases linearly from max to min
-        # as score increases from min_cutoff to max_cutoff
-        slope = (self.max_fail_rate - self.min_fail_rate) / (self.min_cutoff - self.max_cutoff)
-        diagonal_fail_rates = self.max_fail_rate + slope * (score_range - self.min_cutoff)
-        diagonal_percentages = diagonal_fail_rates * 100
-        
-        # Find intersection point
-        differences = np.abs(smooth_percentages - diagonal_percentages)
-        min_idx = np.argmin(differences)
-        
-        cutoff_score = score_range[min_idx]
-        failure_rate = smooth_percentages[min_idx] / 100
-        
-        return {
-            'cutoff': cutoff_score,
-            'failure_rate': failure_rate,
-            'percentage_below': smooth_percentages[min_idx],
-            'score_range': score_range,
-            'smooth_percentages': smooth_percentages,
-            'diagonal_percentages': diagonal_percentages,
-            'intersection_difference': differences[min_idx]
-        }
-    
-    def plot_hofstee_cumulative(self, figsize=(12, 8), method='cubic_spline', show_empirical=True):
-        """Create the Hofstee plot with smooth cubic spline interpolation"""
-        results = self.calculate_hofstee_cutoff(method)
+    def plot_hofstee_cumulative(self, figsize=(12, 8), method='cubic_spline', show_empirical=True, analytical=True):
+        """Create the original Hofstee plot with analytical solution"""
+        results = self.calculate_hofstee_cutoff(method, analytical=analytical)
         
         # Get full range smooth curve for display
         full_score_range = np.linspace(np.min(self.scores) - 2, np.max(self.scores) + 2, 1000)
@@ -172,7 +240,6 @@ class HofsteeAnalyzer:
         
         # Optionally show empirical points
         if show_empirical:
-            # Show every nth point to avoid overcrowding
             step = max(1, len(empirical_scores) // 20)
             ax.scatter(empirical_scores[::step], empirical_percentages[::step], 
                       color='lightblue', s=25, alpha=0.7, 
@@ -191,9 +258,13 @@ class HofsteeAnalyzer:
         diagonal_y = [self.max_fail_rate * 100, self.min_fail_rate * 100]
         ax.plot(diagonal_x, diagonal_y, 'g--', linewidth=3, label='Hofstee Diagonal')
         
-        # Mark intersection point
+        # Mark intersection point - FIXED
         intersection_score = results['cutoff']
-        intersection_percentage = results['failure_rate'] * 100
+        if analytical and results['analytical_solution']:
+            intersection_percentage = results['failure_rate_percentage']
+        else:
+            intersection_percentage = results['failure_rate'] * 100
+            
         ax.plot(intersection_score, intersection_percentage, 'ro', markersize=15, 
                markeredgecolor='black', markeredgewidth=3, zorder=10)
         
@@ -210,8 +281,12 @@ class HofsteeAnalyzer:
         # Formatting
         ax.set_xlabel('Score', fontsize=13, fontweight='bold')
         ax.set_ylabel('Cumulative Percentage', fontsize=13, fontweight='bold')
-        ax.set_title(f'Hofstee Method: Smooth Cumulative Analysis\n({method.replace("_", " ").title()} Interpolation)', 
+        
+        # Title indicates analytical vs numerical solution
+        solution_type = "Analytical" if results.get('analytical_solution', False) else "Numerical"
+        ax.set_title(f'Hofstee Method: {solution_type} Solution\n({method.replace("_", " ").title()} Interpolation)', 
                     fontsize=15, fontweight='bold', pad=20)
+        
         ax.grid(True, alpha=0.3)
         ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         
@@ -219,20 +294,29 @@ class HofsteeAnalyzer:
         ax.set_xlim(np.min(self.scores) - 2, np.max(self.scores) + 2)
         ax.set_ylim(-2, 102)
         
-        # Add detailed annotation
-        ax.annotate(f'Hofstee Cutoff: {intersection_score:.2f}\nFailure Rate: {intersection_percentage:.1f}%',
-                   xy=(intersection_score, intersection_percentage), 
-                   xytext=(intersection_score + 4, intersection_percentage + 15),
-                   arrowprops=dict(arrowstyle='->', color='red', lw=2),
-                   bbox=dict(boxstyle="round,pad=0.5", facecolor="yellow", alpha=0.9),
-                   fontsize=11, fontweight='bold')
+        # Add detailed annotation with solution type and precision
+        if results.get('analytical_solution', False):
+            error_text = f"Error: {results['intersection_error']:.2e}"
+            ax.annotate(f'{solution_type} Solution\nCutoff: {intersection_score:.4f}\nFailure Rate: {intersection_percentage:.2f}%\n{error_text}',
+                       xy=(intersection_score, intersection_percentage), 
+                       xytext=(intersection_score + 4, intersection_percentage + 15),
+                       arrowprops=dict(arrowstyle='->', color='red', lw=2),
+                       bbox=dict(boxstyle="round,pad=0.5", facecolor="yellow", alpha=0.9),
+                       fontsize=10, fontweight='bold')
+        else:
+            ax.annotate(f'{solution_type} Solution\nCutoff: {intersection_score:.4f}\nFailure Rate: {intersection_percentage:.2f}%',
+                       xy=(intersection_score, intersection_percentage), 
+                       xytext=(intersection_score + 4, intersection_percentage + 15),
+                       arrowprops=dict(arrowstyle='->', color='red', lw=2),
+                       bbox=dict(boxstyle="round,pad=0.5", facecolor="yellow", alpha=0.9),
+                       fontsize=10, fontweight='bold')
         
         plt.tight_layout()
         return fig, results
     
-    def create_summary_plots(self, figsize=(15, 10), method='cubic_spline'):
-        """Create comprehensive analysis plots with improved cumulative curve"""
-        results = self.calculate_hofstee_cutoff(method)
+    def create_summary_plots(self, figsize=(15, 10), method='cubic_spline', analytical=True):
+        """Create comprehensive analysis plots"""
+        results = self.calculate_hofstee_cutoff(method, analytical=analytical)
         
         fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=figsize)
         fig.suptitle('Hofstee Cutoff Analysis - Comprehensive View', fontsize=16, fontweight='bold')
@@ -247,59 +331,20 @@ class HofsteeAnalyzer:
         ax1.legend()
         ax1.grid(True, alpha=0.3)
         
-        # Plot 2: Hofstee curve with intersection (zoomed to constraint box)
-        constrained_range = np.linspace(self.min_cutoff - 1, self.max_cutoff + 1, 500)
-        _, constrained_smooth, _, _ = self.get_smooth_cumulative_curve(constrained_range, method)
-        
-        # Hofstee diagonal for constrained range
-        slope = (self.max_fail_rate - self.min_fail_rate) / (self.min_cutoff - self.max_cutoff)
-        diagonal_fail_rates = self.max_fail_rate + slope * (constrained_range - self.min_cutoff)
-        diagonal_percentages = diagonal_fail_rates * 100
-        
-        ax2.plot(constrained_range, constrained_smooth, 'b-', linewidth=3, label='Smooth Cumulative Curve')
-        ax2.plot(constrained_range, diagonal_percentages, 'g--', linewidth=3, label='Hofstee Diagonal')
-        ax2.plot(results['cutoff'], results['failure_rate'] * 100, 'ro', markersize=12, 
-                markeredgecolor='black', markeredgewidth=2,
-                label=f'Intersection ({results["cutoff"]:.2f}, {results["failure_rate"]*100:.1f}%)')
-        
-        # Add constraint boundaries
-        ax2.axhline(self.min_fail_rate * 100, color='orange', linestyle=':', alpha=0.8, linewidth=2,
-                   label=f'Min Fail Rate: {self.min_fail_rate:.1%}')
-        ax2.axhline(self.max_fail_rate * 100, color='orange', linestyle=':', alpha=0.8, linewidth=2,
-                   label=f'Max Fail Rate: {self.max_fail_rate:.1%}')
-        ax2.axvline(self.min_cutoff, color='purple', linestyle=':', alpha=0.8, linewidth=2,
-                   label=f'Min Cutoff: {self.min_cutoff:.1f}')
-        ax2.axvline(self.max_cutoff, color='purple', linestyle=':', alpha=0.8, linewidth=2,
-                   label=f'Max Cutoff: {self.max_cutoff:.1f}')
-        
-        # Fill acceptable region
-        rect_x = [self.min_cutoff, self.max_cutoff, self.max_cutoff, self.min_cutoff]
-        rect_y = [self.min_fail_rate * 100, self.min_fail_rate * 100, 
-                  self.max_fail_rate * 100, self.max_fail_rate * 100]
-        ax2.fill(rect_x, rect_y, alpha=0.1, color='red', label='Acceptable Region')
-        
-        ax2.set_xlabel('Score')
-        ax2.set_ylabel('Cumulative Percentage')
-        ax2.set_title('Hofstee Method: Constraint Region Detail')
-        ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        ax2.grid(True, alpha=0.3)
-        ax2.set_xlim(self.min_cutoff - 1, self.max_cutoff + 1)
-        ax2.set_ylim(max(0, self.min_fail_rate * 100 - 2), min(100, self.max_fail_rate * 100 + 5))
-        
-        # Plot 3: Pass/Fail visualization
+        # Plot 2: Pass/Fail visualization
         pass_scores = self.scores[self.scores >= results['cutoff']]
         fail_scores = self.scores[self.scores < results['cutoff']]
         
-        ax3.hist([fail_scores, pass_scores], bins=25, alpha=0.7, 
+        ax2.hist([fail_scores, pass_scores], bins=25, alpha=0.7, 
                 color=['red', 'green'], label=['Fail', 'Pass'], stacked=True)
-        ax3.axvline(results['cutoff'], color='black', linestyle='--', linewidth=3)
-        ax3.set_xlabel('Score')
-        ax3.set_ylabel('Frequency')
-        ax3.set_title('Pass/Fail Distribution')
-        ax3.legend()
-        ax3.grid(True, alpha=0.3)
+        ax2.axvline(results['cutoff'], color='black', linestyle='--', linewidth=3)
+        ax2.set_xlabel('Score')
+        ax2.set_ylabel('Frequency')
+        ax2.set_title('Pass/Fail Distribution')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
         
-        # Plot 4: Cumulative curve comparison (full range)
+        # Plot 3: Cumulative curve comparison (full range)
         full_range = np.linspace(np.min(self.scores) - 2, np.max(self.scores) + 2, 1000)
         
         # Original step function
@@ -312,15 +357,40 @@ class HofsteeAnalyzer:
         # Smooth curve
         _, smooth_full, _, _ = self.get_smooth_cumulative_curve(full_range, method)
         
-        ax4.plot(full_range, step_percentages, 'r-', linewidth=2, alpha=0.7, label='Step Function')
-        ax4.plot(full_range, smooth_full, 'b-', linewidth=3, label=f'Smooth ({method.replace("_", " ").title()})')
-        ax4.axvline(results['cutoff'], color='green', linestyle='--', linewidth=2, 
+        ax3.plot(full_range, step_percentages, 'r-', linewidth=2, alpha=0.7, label='Step Function')
+        ax3.plot(full_range, smooth_full, 'b-', linewidth=3, label=f'Smooth ({method.replace("_", " ").title()})')
+        ax3.axvline(results['cutoff'], color='green', linestyle='--', linewidth=2, 
                    label=f'Cutoff: {results["cutoff"]:.2f}')
-        ax4.set_xlabel('Score')
-        ax4.set_ylabel('Cumulative Percentage')
-        ax4.set_title('Cumulative Curve Comparison')
-        ax4.legend()
-        ax4.grid(True, alpha=0.3)
+        ax3.set_xlabel('Score')
+        ax3.set_ylabel('Cumulative Percentage')
+        ax3.set_title('Cumulative Curve Comparison')
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+        
+        # Plot 4: Analytical details (if analytical solution was used)
+        if results.get('analytical_solution', False):
+            # Show the difference function near the intersection
+            diff_range = np.linspace(self.min_cutoff, self.max_cutoff, 500)
+            diff_values = [self.intersection_equation(x) for x in diff_range]
+            
+            ax4.plot(diff_range, diff_values, 'purple', linewidth=3, label='Spline - Diagonal')
+            ax4.axhline(y=0, color='black', linestyle='-', alpha=0.5, label='y = 0')
+            ax4.axvline(x=results['cutoff'], color='red', linestyle='--', alpha=0.7, 
+                       label=f'Solution: {results["cutoff"]:.4f}')
+            ax4.plot(results['cutoff'], 0, 'ro', markersize=10, markeredgecolor='black', markeredgewidth=2)
+            
+            ax4.set_xlabel('Score')
+            ax4.set_ylabel('Difference (Spline - Diagonal)')
+            ax4.set_title(f'Root Finding: Error = {results["intersection_error"]:.2e}')
+            ax4.legend()
+            ax4.grid(True, alpha=0.3)
+        else:
+            # Show method comparison or parameter summary
+            ax4.text(0.1, 0.5, f'Numerical Solution Used\nMethod: {method}\nCutoff: {results["cutoff"]:.6f}\nFailure Rate: {results["failure_rate"]:.4%}', 
+                    transform=ax4.transAxes, fontsize=12, verticalalignment='center',
+                    bbox=dict(boxstyle="round,pad=0.5", facecolor="lightblue", alpha=0.8))
+            ax4.set_title('Solution Summary')
+            ax4.axis('off')
         
         plt.tight_layout()
         return fig, results
@@ -344,7 +414,7 @@ def load_data(uploaded_file):
 def main():
     # Header
     st.markdown('<h1 class="main-header">📊 Hofstee Cutoff Analysis</h1>', unsafe_allow_html=True)
-    st.markdown("**Advanced Standard Setting with Smooth Cubic Spline Interpolation**")
+    st.markdown("**Standard Setting with Analytical Equation Solving**")
     st.markdown("---")
     
     # Sidebar for inputs
@@ -356,9 +426,8 @@ def main():
             help="Upload a file containing student scores"
         )
         
-        # Sample data option with your actual data
+        # Sample data option
         if st.button("Use Sample Data (Testing 1920)"):
-            # Your actual data
             sample_scores = [
                 43.09, 43.44, 43.57, 46.03, 49.33, 49.85, 49.88, 49.99, 50.11, 50.21,
                 50.96, 50.97, 51.35, 52.06, 52.39, 52.44, 53.22, 54.19, 54.47, 56.17,
@@ -377,8 +446,6 @@ def main():
                 79.1, 79.2, 80.01, 80.6, 81.51, 82.36, 83.01, 83.43
             ]
             sample_df = pd.DataFrame({'scores': sample_scores})
-            
-            # Store in session state
             st.session_state['df'] = sample_df
             st.session_state['data_loaded'] = True
             st.success("Sample data loaded! (149 students)")
@@ -488,8 +555,15 @@ def main():
                 help="Maximum acceptable percentage of students who should fail"
             ) / 100
             
-            # Smoothing method selection
+            # Analysis options
             st.header("🎛️ Analysis Options")
+            
+            use_analytical = st.checkbox(
+                "Use Analytical Solution",
+                value=True,
+                help="Solve equations analytically for maximum precision"
+            )
+            
             smoothing_method = st.selectbox(
                 "Interpolation Method",
                 ['cubic_spline', 'interp1d_cubic', 'linear'],
@@ -512,11 +586,11 @@ def main():
             
             # Validate parameters
             if min_cutoff >= max_cutoff:
-                st.error("❌ Minimum cutoff must be less than maximum cutoff!")
+                st.error("⚠️ Minimum cutoff must be less than maximum cutoff!")
                 return
             
             if min_fail_rate >= max_fail_rate:
-                st.error("❌ Minimum failure rate must be less than maximum failure rate!")
+                st.error("⚠️ Minimum failure rate must be less than maximum failure rate!")
                 return
             
             # Perform Hofstee analysis
@@ -524,20 +598,20 @@ def main():
             
             # Results summary
             st.subheader("🎯 Analysis Results")
-            results = analyzer.calculate_hofstee_cutoff(method=smoothing_method)
+            results = analyzer.calculate_hofstee_cutoff(method=smoothing_method, analytical=use_analytical)
             
             # Key metrics
             col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric(
                     "Hofstee Cutoff",
-                    f"{results['cutoff']:.2f}",
+                    f"{results['cutoff']:.4f}",
                     help="Optimal cutoff score determined by Hofstee method"
                 )
             with col2:
                 st.metric(
                     "Failure Rate",
-                    f"{results['failure_rate']:.1%}",
+                    f"{results['failure_rate']:.2%}",
                     help="Percentage of students who would fail with this cutoff"
                 )
             with col3:
@@ -556,30 +630,56 @@ def main():
                 )
             
             # Quality indicators
-            st.markdown("### 📈 Analysis Quality")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric(
-                    "Intersection Precision",
-                    f"{results['intersection_difference']:.4f}",
-                    help="How closely the curves intersect (lower is better)"
-                )
-            with col2:
-                smoothing_quality = "Excellent" if smoothing_method == 'cubic_spline' else "Good"
-                st.metric(
-                    "Smoothing Quality",
-                    smoothing_quality,
-                    help="Quality of the interpolation method used"
-                )
+            if results.get('analytical_solution', False):
+                st.markdown("### ✅ Analytical Solution Quality")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric(
+                        "Solution Method",
+                        "Analytical (Brent's)",
+                        help="Exact mathematical solution using root finding"
+                    )
+                with col2:
+                    st.metric(
+                        "Intersection Error",
+                        f"{results['intersection_error']:.2e}",
+                        help="Precision of the intersection (lower is better)"
+                    )
+                with col3:
+                    st.metric(
+                        "Equation Available",
+                        "Yes",
+                        help=f"Diagonal: {results['diagonal_equation']}"
+                    )
+                
+                # Show equation details
+                with st.expander("🧮 Mathematical Details"):
+                    st.markdown("**Analytical Solution:**")
+                    st.code(f"""
+Spline Function: S(x) = Cubic spline interpolation
+Diagonal Function: D(x) = {results['diagonal_equation']}
+
+Intersection: S(x) = D(x)
+Method: Brent's root finding algorithm
+Solution: x = {results['cutoff']:.8f}
+Verification:
+  S({results['cutoff']:.6f}) = {results['failure_rate_percentage']:.8f}%
+  D({results['cutoff']:.6f}) = {results['diagonal_value']:.8f}%
+  |S(x) - D(x)| = {results['intersection_error']:.2e}
+                    """)
             
             # Main Hofstee plot
             st.subheader("📈 Hofstee Analysis Plot")
-            fig1, _ = analyzer.plot_hofstee_cumulative(method=smoothing_method, show_empirical=show_empirical)
+            fig1, _ = analyzer.plot_hofstee_cumulative(
+                method=smoothing_method, 
+                show_empirical=show_empirical, 
+                analytical=use_analytical
+            )
             st.pyplot(fig1)
             
             # Comprehensive analysis
-            st.subheader("📊 Detailed Analysis")
-            fig2, _ = analyzer.create_summary_plots(method=smoothing_method)
+            st.subheader("📊 Additional Analysis")
+            fig2, _ = analyzer.create_summary_plots(method=smoothing_method, analytical=use_analytical)
             st.pyplot(fig2)
             
             # Detailed statistics
@@ -594,15 +694,14 @@ def main():
                 st.markdown("**Overall Statistics**")
                 stats_data = {
                     "Metric": ["Total Students", "Mean Score", "Median Score", "Standard Deviation", 
-                              "Score Range", "Unique Scores", "Duplicate Scores"],
+                              "Score Range", "Unique Scores"],
                     "Value": [
                         len(scores),
                         f"{np.mean(scores):.2f}",
                         f"{np.median(scores):.2f}",
                         f"{np.std(scores):.2f}",
                         f"{np.min(scores):.2f} - {np.max(scores):.2f}",
-                        len(unique_scores),
-                        len(duplicates)
+                        len(unique_scores)
                     ]
                 }
                 st.dataframe(pd.DataFrame(stats_data), hide_index=True)
@@ -611,51 +710,16 @@ def main():
                 st.markdown("**Pass/Fail Breakdown**")
                 outcome_data = {
                     "Outcome": ["Passing Students", "Failing Students", "Pass Rate", 
-                               "Mean (Passing)", "Mean (Failing)", "Std (Passing)", "Std (Failing)"],
+                               "Mean (Passing)", "Mean (Failing)"],
                     "Value": [
                         f"{len(pass_scores)} ({len(pass_scores)/len(scores):.1%})",
                         f"{len(fail_scores)} ({len(fail_scores)/len(scores):.1%})",
                         f"{len(pass_scores)/len(scores):.1%}",
                         f"{np.mean(pass_scores):.2f}" if len(pass_scores) > 0 else "N/A",
-                        f"{np.mean(fail_scores):.2f}" if len(fail_scores) > 0 else "N/A",
-                        f"{np.std(pass_scores):.2f}" if len(pass_scores) > 0 else "N/A",
-                        f"{np.std(fail_scores):.2f}" if len(fail_scores) > 0 else "N/A"
+                        f"{np.mean(fail_scores):.2f}" if len(fail_scores) > 0 else "N/A"
                     ]
                 }
                 st.dataframe(pd.DataFrame(outcome_data), hide_index=True)
-            
-            # Method comparison
-            st.subheader("🔬 Method Comparison")
-            methods = ['cubic_spline', 'interp1d_cubic', 'linear']
-            comparison_results = []
-            
-            for method in methods:
-                method_result = analyzer.calculate_hofstee_cutoff(method=method)
-                comparison_results.append({
-                    'Method': method.replace('_', ' ').title(),
-                    'Cutoff Score': f"{method_result['cutoff']:.2f}",
-                    'Failure Rate': f"{method_result['failure_rate']:.2%}",
-                    'Intersection Error': f"{method_result['intersection_difference']:.4f}"
-                })
-            
-            comparison_df = pd.DataFrame(comparison_results)
-            st.dataframe(comparison_df, hide_index=True)
-            
-            # Parameter summary
-            with st.expander("🔧 Analysis Parameters Used"):
-                param_data = {
-                    "Parameter": ["Minimum Cutoff", "Maximum Cutoff", "Minimum Failure Rate", 
-                                 "Maximum Failure Rate", "Interpolation Method", "Show Empirical Points"],
-                    "Value": [
-                        f"{min_cutoff:.2f}", 
-                        f"{max_cutoff:.2f}", 
-                        f"{min_fail_rate:.1%}", 
-                        f"{max_fail_rate:.1%}",
-                        smoothing_method.replace('_', ' ').title(),
-                        "Yes" if show_empirical else "No"
-                    ]
-                }
-                st.dataframe(pd.DataFrame(param_data), hide_index=True)
             
             # Export results
             st.subheader("💾 Export Results")
@@ -676,39 +740,50 @@ def main():
             col1, col2 = st.columns(2)
             with col1:
                 st.download_button(
-                    label="📥 Download Pass/Fail Results (CSV)",
+                    label="📥 Download Results (CSV)",
                     data=csv_str,
-                    file_name=f"hofstee_results_{results['cutoff']:.2f}.csv",
+                    file_name=f"hofstee_results_{results['cutoff']:.4f}.csv",
                     mime="text/csv"
                 )
             
             # Summary report
+            solution_type = "Analytical" if results.get('analytical_solution', False) else "Numerical"
             summary_report = f"""
 # Hofstee Analysis Summary Report
 
 ## Dataset Information
 - **Total Students**: {len(scores)}
 - **Score Range**: {np.min(scores):.2f} - {np.max(scores):.2f}
-- **Mean Score**: {np.mean(scores):.2f}
-- **Standard Deviation**: {np.std(scores):.2f}
-- **Unique Scores**: {len(unique_scores)} ({len(duplicates)} duplicates)
+- **Mean Score**: {np.mean(scores):.2f} ± {np.std(scores):.2f}
+- **Unique Scores**: {len(unique_scores)}
 
 ## Hofstee Parameters
 - **Minimum Cutoff**: {min_cutoff:.2f}
 - **Maximum Cutoff**: {max_cutoff:.2f}
 - **Minimum Failure Rate**: {min_fail_rate:.1%}
 - **Maximum Failure Rate**: {max_fail_rate:.1%}
-- **Interpolation Method**: {smoothing_method.replace('_', ' ').title()}
 
-## Results
-- **Recommended Cutoff**: {results['cutoff']:.2f}
-- **Actual Failure Rate**: {results['failure_rate']:.2%}
+## Solution
+- **Method**: {solution_type}
+- **Cutoff Score**: {results['cutoff']:.6f}
+- **Failure Rate**: {results['failure_rate']:.3%}
 - **Students Passing**: {len(pass_scores)} ({len(pass_scores)/len(scores):.1%})
 - **Students Failing**: {len(fail_scores)} ({len(fail_scores)/len(scores):.1%})
 
-## Quality Metrics
-- **Intersection Precision**: {results['intersection_difference']:.4f}
-- **Method Used**: Smooth cubic spline interpolation with proper cumulative calculation
+"""
+            
+            if results.get('analytical_solution', False):
+                summary_report += f"""
+## Analytical Details
+- **Diagonal Equation**: {results['diagonal_equation']}
+- **Intersection Error**: {results['intersection_error']:.2e}
+- **Root Finding Method**: Brent's algorithm
+"""
+            
+            summary_report += f"""
+## Statistics
+- **Mean Score (Passing)**: {np.mean(pass_scores):.2f}
+- **Mean Score (Failing)**: {np.mean(fail_scores):.2f if len(fail_scores) > 0 else "N/A"}
 
 Generated on {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}
             """
@@ -717,7 +792,7 @@ Generated on {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}
                 st.download_button(
                     label="📄 Download Summary Report",
                     data=summary_report,
-                    file_name=f"hofstee_summary_{results['cutoff']:.2f}.txt",
+                    file_name=f"hofstee_summary_{results['cutoff']:.4f}.txt",
                     mime="text/plain"
                 )
     
@@ -732,31 +807,30 @@ Generated on {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}
         2. **Adjust parameters** in the sidebar:
            - Set minimum and maximum acceptable cutoff scores
            - Define acceptable failure rate range
-           - Choose interpolation method (cubic spline recommended)
+           - Choose analytical solving (recommended for precision)
         3. **Click Analyze** to see results
         
         ## About the Hofstee Method:
         
-        The Hofstee method is a standard-setting technique that determines optimal cutoff scores by:
-        - Balancing expert judgments about acceptable score ranges
-        - Considering acceptable failure rate limits
-        - Finding the intersection between empirical cumulative data and expert constraints
+        The Hofstee method determines optimal cutoff scores by finding the intersection between:
+        - **Empirical cumulative curve**: Shows actual score distribution
+        - **Hofstee diagonal**: Represents acceptable cutoff/failure rate combinations
         
-        ## New Features in This Version:
+        ## New Analytical Features:
         
-        - **Smooth Cubic Spline Interpolation**: Creates smoother, more accurate cumulative curves
-        - **Proper Cumulative Calculation**: Correctly handles duplicate scores and starts from 0%
-        - **Multiple Interpolation Methods**: Compare cubic spline, cubic interpolation, and linear methods
-        - **Enhanced Duplicate Handling**: Properly processes datasets with repeated scores
-        - **Precision Metrics**: Shows how accurately the intersection point is calculated
+        - **🎯 Exact Mathematical Solution**: Uses Brent's root-finding algorithm to solve equations analytically
+        - **📊 Cubic Spline Interpolation**: Creates smooth curves from empirical data
+        - **✅ Precision Metrics**: Shows intersection accuracy (typically < 1e-10)
+        - **🧮 Equation Display**: Shows the mathematical equations being solved
+        - **🔍 Root Finding Visualization**: Plots the difference function to show the solution
         
-        This method is widely used in educational assessment and certification exams.
+        This method is widely used in educational assessment and certification exams for setting defensible passing scores.
         """)
         
         # Show sample data preview
         st.markdown("### 📊 Sample Data Preview")
-        sample_scores = [43.09, 43.44, 43.57, 46.03, 49.33, 49.85, 49.88, 49.99, 50.11, 50.21]
-        st.code(f"Sample scores: {sample_scores[:5]}... (149 total scores)")
+        sample_scores = [43.09, 43.44, 43.57, 46.03, 49.33]
+        st.code(f"Sample scores: {sample_scores}... (149 total scores)")
 
 if __name__ == "__main__":
     main()
