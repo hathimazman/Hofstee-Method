@@ -274,7 +274,7 @@ class HofsteeAnalyzer:
 
     def plot_hofstee_cumulative(self, figsize=(10, 8), smoothing_scale=1.0):
         """
-        Hofstee plot using the smooth Bézier-spline cumulative curve (percent).
+        Hofstee plot using the cumulative curve (percent).
         """
         import matplotlib.pyplot as plt
         results = self.calculate_hofstee_cutoff(smoothing_scale=smoothing_scale)
@@ -316,7 +316,7 @@ class HofsteeAnalyzer:
         # Labels, limits, legend
         ax.set_xlabel('Score', fontsize=12, fontweight='bold')
         ax.set_ylabel('Cumulative Percentage', fontsize=12, fontweight='bold')
-        ax.set_title('Hofstee: Cumulative % (Smooth Bézier) vs Score', fontsize=14, fontweight='bold', pad=20)
+        ax.set_title('Hofstee: Cumulative % vs Score', fontsize=14, fontweight='bold', pad=20)
         ax.grid(True, alpha=0.3)
         ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         ax.set_xlim(min(self.scores) - 2, max(self.scores) + 2)
